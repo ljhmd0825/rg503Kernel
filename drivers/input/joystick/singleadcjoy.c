@@ -25,6 +25,7 @@
 #include <linux/of_gpio.h>
 #include <linux/delay.h>
 
+#include <linux/pwm.h> // add by trngaje
 /*----------------------------------------------------------------------------*/
 #define DRV_NAME "retrogame_joypad"
 #define __LEFT_JOYSTICK_INVERT__
@@ -78,6 +79,9 @@ struct bt_gpio {
 };
 
 struct joypad {
+	/* add by trngaje */
+	struct input_dev	*input;	/* input device interface */ 
+	struct pwm_device	*pwm;	/* pwm device interface */
 	struct device *dev;
 	int poll_interval;
 
@@ -929,6 +933,40 @@ void rk_send_key_f_key_down(void)
 }
 EXPORT_SYMBOL(rk_send_key_f_key_down);
 
+// add for rumble by trnngaje
+static int joypad_play_effect(struct input_dev *dev, void *data, struct ff_effect *effect)
+{
+	struct joypad *joypad = (struct joypad *)data;
+	
+	__u16 strong;
+	__u16 weak;
+
+	int period;
+	struct pwm_state state;
+	struct pwm_args pargs;
+	
+	if (effect->type != FF_RUMBLE)
+		return 0;
+
+	strong = effect->u.rumble.strong_magnitude;
+	weak = effect->u.rumble.weak_magnitude;
+
+	pwm_get_state(joypad->pwm, &state);
+	pwm_get_args(joypad->pwm, &pargs);
+	
+	period = pargs.period;
+	pwm_config(joypad->pwm,  period - (__u16)(strong * period / 0xffff), period);
+	pwm_enable(joypad->pwm);
+
+	return 1;
+}
+
+static int joypad_init_ff(struct joypad *joypad)
+{
+	input_set_capability(joypad->input, EV_FF, FF_RUMBLE);
+
+	return input_ff_create_memless(joypad->input, joypad, joypad_play_effect);
+}
 
 static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 {
@@ -952,6 +990,7 @@ static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 
 	input = poll_dev->input;
 	joypad_input_g=input;
+	joypad->input=input; // add by trngaje
 
 	device_property_read_string(dev, "joypad-name", &input->name);
 	input->phys = DRV_NAME"/input0";
@@ -981,6 +1020,14 @@ static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 			"%s : adc tuning_p = %d, adc_tuning_n = %d\n\n",
 			__func__, adc->tuning_p, adc->tuning_n);
 	}
+
+	// add for rumble by trngaje
+	joypad->pwm = devm_pwm_get(dev, NULL);
+	if (IS_ERR(joypad->pwm) && PTR_ERR(joypad->pwm) != -EPROBE_DEFER) {
+		dev_err(dev, "unable to request PWM for rumble\n");
+	}
+
+	error = joypad_init_ff(joypad);
 
 	/* GPIO key setup */
 	__set_bit(EV_KEY, input->evbit);
